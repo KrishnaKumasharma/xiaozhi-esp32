@@ -28,4 +28,4 @@ Xiaozhi Assistant -> Board Type ->面包板新版接线（WiFi）+ LCD + Camera
 
 ```bash
 idf.py build flash
-```
+```walle build
