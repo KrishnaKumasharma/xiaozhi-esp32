@@ -6,63 +6,23 @@
 #include "button.h"
 #include "config.h"
 #include "mcp_server.h"
-#include "lamp_controller.h"
 #include "led/single_led.h"
 #include "esp32_camera.h"
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
+#include <driver/gpio.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <driver/spi_common.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
-#if defined(LCD_TYPE_ILI9341_SERIAL)
-#include "esp_lcd_ili9341.h"
-#endif
-
-#if defined(LCD_TYPE_GC9A01_SERIAL)
-#include "esp_lcd_gc9a01.h"
-static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
-    //  {cmd, { data }, data_size, delay_ms}
-    {0xfe, (uint8_t[]){0x00}, 0, 0},
-    {0xef, (uint8_t[]){0x00}, 0, 0},
-    {0xb0, (uint8_t[]){0xc0}, 1, 0},
-    {0xb1, (uint8_t[]){0x80}, 1, 0},
-    {0xb2, (uint8_t[]){0x27}, 1, 0},
-    {0xb3, (uint8_t[]){0x13}, 1, 0},
-    {0xb6, (uint8_t[]){0x19}, 1, 0},
-    {0xb7, (uint8_t[]){0x05}, 1, 0},
-    {0xac, (uint8_t[]){0xc8}, 1, 0},
-    {0xab, (uint8_t[]){0x0f}, 1, 0},
-    {0x3a, (uint8_t[]){0x05}, 1, 0},
-    {0xb4, (uint8_t[]){0x04}, 1, 0},
-    {0xa8, (uint8_t[]){0x08}, 1, 0},
-    {0xb8, (uint8_t[]){0x08}, 1, 0},
-    {0xea, (uint8_t[]){0x02}, 1, 0},
-    {0xe8, (uint8_t[]){0x2A}, 1, 0},
-    {0xe9, (uint8_t[]){0x47}, 1, 0},
-    {0xe7, (uint8_t[]){0x5f}, 1, 0},
-    {0xc6, (uint8_t[]){0x21}, 1, 0},
-    {0xc7, (uint8_t[]){0x15}, 1, 0},
-    {0xf0,
-    (uint8_t[]){0x1D, 0x38, 0x09, 0x4D, 0x92, 0x2F, 0x35, 0x52, 0x1E, 0x0C,
-                0x04, 0x12, 0x14, 0x1f},
-    14, 0},
-    {0xf1,
-    (uint8_t[]){0x16, 0x40, 0x1C, 0x54, 0xA9, 0x2D, 0x2E, 0x56, 0x10, 0x0D,
-                0x0C, 0x1A, 0x14, 0x1E},
-    14, 0},
-    {0xf4, (uint8_t[]){0x00, 0x00, 0xFF}, 3, 0},
-    {0xba, (uint8_t[]){0xFF, 0xFF}, 2, 0},
-};
-#endif
- 
 #define TAG "CompactWifiBoardS3Cam"
 
 class CompactWifiBoardS3Cam : public WifiBoard {
 private:
- 
     Button boot_button_;
     LcdDisplay* display_;
     Esp32Camera* camera_;
@@ -81,7 +41,6 @@ private:
     void InitializeLcdDisplay() {
         esp_lcd_panel_io_handle_t panel_io = nullptr;
         esp_lcd_panel_handle_t panel = nullptr;
-        // 液晶屏控制IO初始化
         ESP_LOGD(TAG, "Install panel IO");
         esp_lcd_panel_io_spi_config_t io_config = {};
         io_config.cs_gpio_num = DISPLAY_CS_PIN;
@@ -93,33 +52,18 @@ private:
         io_config.lcd_param_bits = 8;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
 
-        // 初始化液晶屏驱动芯片
         ESP_LOGD(TAG, "Install LCD driver");
         esp_lcd_panel_dev_config_t panel_config = {};
         panel_config.reset_gpio_num = DISPLAY_RST_PIN;
         panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
         panel_config.bits_per_pixel = 16;
-#if defined(LCD_TYPE_ILI9341_SERIAL)
-        ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
-#elif defined(LCD_TYPE_GC9A01_SERIAL)
-        ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(panel_io, &panel_config, &panel));
-        gc9a01_vendor_config_t gc9107_vendor_config = {
-            .init_cmds = gc9107_lcd_init_cmds,
-            .init_cmds_size = sizeof(gc9107_lcd_init_cmds) / sizeof(gc9a01_lcd_init_cmd_t),
-        };        
-#else
         ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel));
-#endif
-        
-        esp_lcd_panel_reset(panel);
 
+        esp_lcd_panel_reset(panel);
         esp_lcd_panel_init(panel);
         esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);
         esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
-#ifdef  LCD_TYPE_GC9A01_SERIAL
-        panel_config.vendor_config = &gc9107_vendor_config;
-#endif
         display_ = new SpiLcdDisplay(panel_io, panel,
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
@@ -164,6 +108,97 @@ private:
         });
     }
 
+    // ---------- Wall-E motors ----------
+    void MotorStop() {
+        gpio_set_level(MOTOR_L_IN1, 0);
+        gpio_set_level(MOTOR_L_IN2, 0);
+        gpio_set_level(MOTOR_R_IN1, 0);
+        gpio_set_level(MOTOR_R_IN2, 0);
+    }
+
+    // l, r: 1 = forward, -1 = backward, 0 = stop
+    void MotorDrive(int l, int r, int ms) {
+        gpio_set_level(MOTOR_L_IN1, l > 0);
+        gpio_set_level(MOTOR_L_IN2, l < 0);
+        gpio_set_level(MOTOR_R_IN1, r > 0);
+        gpio_set_level(MOTOR_R_IN2, r < 0);
+        vTaskDelay(pdMS_TO_TICKS(ms));
+        MotorStop();
+        vTaskDelay(pdMS_TO_TICKS(80));
+    }
+
+    void InitializeMotors() {
+        gpio_config_t io_conf = {};
+        io_conf.intr_type = GPIO_INTR_DISABLE;
+        io_conf.mode = GPIO_MODE_OUTPUT;
+        io_conf.pin_bit_mask = (1ULL << MOTOR_L_IN1) | (1ULL << MOTOR_L_IN2) |
+                               (1ULL << MOTOR_R_IN1) | (1ULL << MOTOR_R_IN2);
+        io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+        gpio_config(&io_conf);
+        MotorStop();
+    }
+
+    void InitializeTools() {
+        auto& mcp_server = McpServer::GetInstance();
+
+        mcp_server.AddTool("self.walle.come_here",
+            "Move the robot forward toward the user. Use when asked to come here.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                MotorDrive(1, 1, 900);
+                return true;
+            });
+
+        mcp_server.AddTool("self.walle.move_back",
+            "Move the robot backward.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                MotorDrive(-1, -1, 900);
+                return true;
+            });
+
+        mcp_server.AddTool("self.walle.spin",
+            "Move forward a little and spin around.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                MotorDrive(1, 1, 900);
+                MotorDrive(1, -1, 1400);
+                return true;
+            });
+
+        mcp_server.AddTool("self.walle.dance",
+            "Do the robot dance: spin left and right and shuffle forward and back.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                MotorDrive(-1, 1, 500);
+                MotorDrive(1, -1, 500);
+                MotorDrive(1, 1, 250);
+                MotorDrive(-1, -1, 250);
+                MotorDrive(1, 1, 250);
+                MotorDrive(-1, -1, 250);
+                MotorDrive(-1, 1, 700);
+                MotorDrive(1, -1, 700);
+                return true;
+            });
+
+        mcp_server.AddTool("self.walle.stop",
+            "Stop all motors immediately.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                MotorStop();
+                return true;
+            });
+
+        mcp_server.AddTool("self.walle.sleep",
+            "Stop moving and rest. Use when asked to stay back or go to sleep.",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                MotorStop();
+                return true;
+            });
+    }
+
 public:
     CompactWifiBoardS3Cam() :
         boot_button_(BOOT_BUTTON_GPIO) {
@@ -171,10 +206,11 @@ public:
         InitializeLcdDisplay();
         InitializeButtons();
         InitializeCamera();
+        InitializeMotors();
+        InitializeTools();
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
-        
     }
 
     virtual Led* GetLed() override {
@@ -183,13 +219,8 @@ public:
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-#ifdef AUDIO_I2S_METHOD_SIMPLEX
-        static NoAudioCodecSimplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK, AUDIO_I2S_SPK_GPIO_DOUT, AUDIO_I2S_MIC_GPIO_SCK, AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN);
-#else
         static NoAudioCodecDuplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
             AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN);
-#endif
         return &audio_codec;
     }
 
