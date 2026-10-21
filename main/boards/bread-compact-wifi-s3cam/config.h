@@ -37,13 +37,13 @@
 #define CAMERA_PIN_RESET GPIO_NUM_NC
 #define XCLK_FREQ_HZ 20000000
 
-// Display ST7789 240x240 (CS not used)
+// Display ST7789 240x240 (8-pin, CS on GPIO 3)
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_41
 #define DISPLAY_MOSI_PIN      GPIO_NUM_38
 #define DISPLAY_CLK_PIN       GPIO_NUM_39
 #define DISPLAY_DC_PIN        GPIO_NUM_40
 #define DISPLAY_RST_PIN       GPIO_NUM_42
-#define DISPLAY_CS_PIN        GPIO_NUM_NC
+#define DISPLAY_CS_PIN        GPIO_NUM_3
 
 #define DISPLAY_WIDTH   240
 #define DISPLAY_HEIGHT  240
@@ -55,7 +55,7 @@
 #define DISPLAY_OFFSET_X  0
 #define DISPLAY_OFFSET_Y  0
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
-#define DISPLAY_SPI_MODE 3
+#define DISPLAY_SPI_MODE 0
 
 // Wall-E motors (dual H-bridge)
 #define MOTOR_L_IN1 GPIO_NUM_47
@@ -63,6 +63,6 @@
 #define MOTOR_R_IN1 GPIO_NUM_44
 #define MOTOR_R_IN2 GPIO_NUM_45
 
-#define LAMP_GPIO GPIO_NUM_3
+#define LAMP_GPIO GPIO_NUM_NC
 
 #endif // _BOARD_CONFIG_H_
